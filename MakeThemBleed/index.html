@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Make Them Bleed - Top Down Alien Shooter</title>
+    <meta name="description" content="Survive endless waves of aliens in this intense top-down shooter. Upgrade weapons, defeat bosses, and make them bleed!">
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Main Menu Overlay -->
+    <div id="mainMenu" class="overlay">
+        <div class="menu-particles" id="menuParticles"></div>
+        <div class="menu-content">
+            <div class="title-container">
+                <h1 class="game-title">MAKE THEM<br><span class="bleed">BLEED</span></h1>
+                <p class="tagline">Survive the alien onslaught</p>
+            </div>
+            <div class="menu-buttons">
+                <button class="menu-btn play-btn" id="playBtn">
+                    <span class="btn-text">PLAY</span>
+                    <span class="btn-glow"></span>
+                </button>
+            </div>
+            <div class="controls-hint">
+                <p>WASD - Move &nbsp;|&nbsp; Mouse - Aim &nbsp;|&nbsp; Click - Shoot &nbsp;|&nbsp; 1-5 - Switch Weapon</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Over Overlay -->
+    <div id="gameOver" class="overlay" style="display:none">
+        <div class="menu-content">
+            <h1 class="game-over-title">GAME OVER</h1>
+            <div class="stats-container">
+                <div class="stat-row">
+                    <span class="stat-label">WAVE REACHED</span>
+                    <span class="stat-value" id="finalWave">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">ALIENS KILLED</span>
+                    <span class="stat-value" id="finalKills">0</span>
+                </div>
+            </div>
+            <div class="menu-buttons">
+                <button class="menu-btn play-btn" id="restartBtn">
+                    <span class="btn-text">RESTART</span>
+                    <span class="btn-glow"></span>
+                </button>
+                <button class="menu-btn secondary-btn" id="menuBtn">
+                    <span class="btn-text">MAIN MENU</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Boss Health Bar -->
+    <div id="bossHealthBar" style="display:none">
+        <div class="boss-name" id="bossName">ALIEN OVERLORD</div>
+        <div class="boss-hp-container">
+            <div class="boss-hp-fill" id="bossHpFill"></div>
+            <div class="boss-hp-text" id="bossHpText"></div>
+        </div>
+    </div>
+
+    <!-- Wave Announcement -->
+    <div id="waveAnnounce" style="display:none">
+        <div class="wave-text" id="waveText">WAVE 1</div>
+    </div>
+
+    <!-- Scripts loaded in dependency order -->
+    <script src="js/audio.js"></script>
+    <script src="js/camera.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/particles.js"></script>
+    <script src="js/weapons.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/enemies.js"></script>
+    <script src="js/waves.js"></script>
+    <script src="js/hud.js"></script>
+    <script src="js/menu.js"></script>
+    <script src="js/game.js"></script>
+</body>
+</html>
