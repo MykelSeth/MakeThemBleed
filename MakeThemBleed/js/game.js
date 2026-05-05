@@ -1,22 +1,14 @@
 // ===== MAIN GAME =====
-// Game loop, state management, collision detection, input handling
-
+// Game loop, state machine, collision, input, power-ups, pause
 class Game {
     constructor() {
-        // Canvas
         this.canvas = document.getElementById('gameCanvas');
         this.ctx = this.canvas.getContext('2d');
         this.resize();
-
-        // Input
         this.keys = {};
         this.mouse = { screenX: 0, screenY: 0, worldX: 0, worldY: 0, down: false };
         this.scrollDelta = 0;
-
-        // Game state
-        this.state = 'menu'; // menu, playing, gameover
-
-        // Systems
+        this.state = 'menu'; // menu, playing, paused, gameover
         this.audio = new AudioManager();
         this.camera = new Camera();
         this.map = new GameMap();
@@ -24,219 +16,148 @@ class Game {
         this.hud = new HUD();
         this.waveManager = new WaveManager();
         this.menuManager = new MenuManager();
-
-        // Entities
+        this.scoring = new ScoringSystem();
         this.player = null;
         this.enemies = [];
         this.projectiles = [];
         this.pickups = [];
-
-        // Timing
+        this.droppedItems = [];
+        // Active power-ups (timers)
+        this.activePowerUps = { freeze: 0, flame: 0, unlimitedAmmo: 0, nuke: 0 };
         this.lastTime = 0;
         this.deltaTime = 0;
-
-        // Setup
         this._setupInput();
         this._setupMenuCallbacks();
-
-        // Make globally accessible
         window.game = this;
-
-        // Start menu
         this.showMainMenu();
-
-        // Start game loop
         requestAnimationFrame((t) => this.loop(t));
     }
+    resize() { this.canvas.width = window.innerWidth; this.canvas.height = window.innerHeight; }
 
-    resize() {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
-    }
-
-    // ===== INPUT =====
     _setupInput() {
         window.addEventListener('resize', () => this.resize());
-
         window.addEventListener('keydown', (e) => {
             this.keys[e.key.toLowerCase()] = true;
-
-            // Initialize audio on first input
-            if (!this.audio.initialized) {
-                this.audio.init();
+            if (!this.audio.initialized) this.audio.init();
+            // ESC for pause
+            if (e.key === 'Escape') {
+                if (this.state === 'playing') this.pauseGame();
+                else if (this.state === 'paused') this.resumeGame();
             }
         });
-
-        window.addEventListener('keyup', (e) => {
-            this.keys[e.key.toLowerCase()] = false;
-        });
-
+        window.addEventListener('keyup', (e) => { this.keys[e.key.toLowerCase()] = false; });
         this.canvas.addEventListener('mousemove', (e) => {
-            this.mouse.screenX = e.clientX;
-            this.mouse.screenY = e.clientY;
-            // Update world coordinates
-            const world = this.camera.screenToWorld(e.clientX, e.clientY);
-            this.mouse.worldX = world.x;
-            this.mouse.worldY = world.y;
+            this.mouse.screenX = e.clientX; this.mouse.screenY = e.clientY;
+            const w = this.camera.screenToWorld(e.clientX, e.clientY);
+            this.mouse.worldX = w.x; this.mouse.worldY = w.y;
         });
-
         this.canvas.addEventListener('mousedown', (e) => {
-            if (e.button === 0) {
-                this.mouse.down = true;
-                // Initialize audio on first click
-                if (!this.audio.initialized) {
-                    this.audio.init();
-                }
-            }
+            if (e.button === 0) { this.mouse.down = true; if (!this.audio.initialized) this.audio.init(); }
         });
-
-        this.canvas.addEventListener('mouseup', (e) => {
-            if (e.button === 0) this.mouse.down = false;
-        });
-
-        this.canvas.addEventListener('wheel', (e) => {
-            this.scrollDelta = e.deltaY;
-        });
-
-        // Prevent context menu on right click
+        this.canvas.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouse.down = false; });
+        this.canvas.addEventListener('wheel', (e) => { this.scrollDelta = e.deltaY; });
         this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
-    // ===== MENU CALLBACKS =====
     _setupMenuCallbacks() {
-        this.menuManager.onPlay = () => {
-            if (!this.audio.initialized) this.audio.init();
-            this.startGame();
-        };
-
-        this.menuManager.onRestart = () => {
-            this.startGame();
-        };
-
-        this.menuManager.onMainMenu = () => {
-            this.showMainMenu();
-        };
+        this.menuManager.onPlay = () => { if (!this.audio.initialized) this.audio.init(); this.startGame(); };
+        this.menuManager.onRestart = () => { this.startGame(); };
+        this.menuManager.onMainMenu = () => { this.showMainMenu(); };
+        this.menuManager.onResume = () => { this.resumeGame(); };
     }
 
-    // ===== STATE TRANSITIONS =====
     showMainMenu() {
         this.state = 'menu';
         this.menuManager.showMainMenu();
         this.menuManager.hideGameOver();
-        if (this.audio.initialized) {
-            this.audio.stopActionMusic();
-            this.audio.playMenuMusic();
-        }
+        this.menuManager.hidePause();
+        // Play menu music even before init — audio.js handles the pending flag
+        this.audio.stopActionMusic(); this.audio.stopWind(); this.audio.playMenuMusic();
     }
 
     startGame() {
         this.state = 'playing';
-        this.menuManager.hideMainMenu();
-        this.menuManager.hideGameOver();
-
-        // Reset entities
+        this.menuManager.hideMainMenu(); this.menuManager.hideGameOver(); this.menuManager.hidePause();
         this.player = new Player(this.map.width / 2, this.map.height / 2);
-        this.enemies = [];
-        this.projectiles = [];
-        this.pickups = [];
+        this.enemies = []; this.projectiles = []; this.pickups = []; this.droppedItems = [];
         this.particles = new ParticleSystem();
-
-        // Reset wave manager
-        this.waveManager = new WaveManager();
-        this.waveManager.startGame(this);
-
-        // Stop menu music (action music starts on first kill)
-        if (this.audio.initialized) {
-            this.audio.stopMenuMusic();
-        }
-
-        // Hide boss bar
-        const bossBar = document.getElementById('bossHealthBar');
-        if (bossBar) bossBar.style.display = 'none';
-
+        this.waveManager = new WaveManager(); this.waveManager.startGame(this);
+        this.scoring = new ScoringSystem();
+        this.activePowerUps = { freeze: 0, flame: 0, unlimitedAmmo: 0, nuke: 0 };
+        if (this.audio.initialized) { this.audio.stopMenuMusic(); this.audio.startWind(); }
+        document.getElementById('bossHealthBar').style.display = 'none';
         document.body.classList.add('playing');
+    }
+
+    pauseGame() {
+        this.state = 'paused';
+        this.menuManager.showPause();
+    }
+
+    resumeGame() {
+        this.state = 'playing';
+        this.menuManager.hidePause();
+        this.menuManager.hideOptions();
     }
 
     gameOver() {
         this.state = 'gameover';
-        this.audio.stopActionMusic();
-        this.menuManager.showGameOver(
-            this.waveManager.currentWave,
-            this.waveManager.totalKills
-        );
-
-        // Hide boss bar
-        const bossBar = document.getElementById('bossHealthBar');
-        if (bossBar) bossBar.style.display = 'none';
-
-        // Hide wave announce
-        const waveEl = document.getElementById('waveAnnounce');
-        if (waveEl) waveEl.style.display = 'none';
+        this.audio.stopActionMusic(); this.audio.stopWind();
+        if (this.audio.initialized) this.audio.playPlayerDeath();
+        this.menuManager.showGameOver(this.waveManager.currentWave, this.waveManager.totalKills, this.scoring);
+        document.getElementById('bossHealthBar').style.display = 'none';
+        document.getElementById('waveAnnounce').style.display = 'none';
     }
 
-    // ===== GAME LOOP =====
-    loop(timestamp) {
-        // Calculate delta time
-        if (this.lastTime === 0) this.lastTime = timestamp;
-        this.deltaTime = Math.min((timestamp - this.lastTime) / 1000, 0.05); // cap at 50ms
-        this.lastTime = timestamp;
-
-        // Update mouse world coords
-        const world = this.camera.screenToWorld(this.mouse.screenX, this.mouse.screenY);
-        this.mouse.worldX = world.x;
-        this.mouse.worldY = world.y;
-
-        // Update & Render based on state
-        if (this.state === 'playing') {
-            this.update(this.deltaTime);
-        }
-
+    loop(ts) {
+        if (this.lastTime === 0) this.lastTime = ts;
+        this.deltaTime = Math.min((ts - this.lastTime) / 1000, 0.05);
+        this.lastTime = ts;
+        const w = this.camera.screenToWorld(this.mouse.screenX, this.mouse.screenY);
+        this.mouse.worldX = w.x; this.mouse.worldY = w.y;
+        if (this.state === 'playing') this.update(this.deltaTime);
         this.render();
-
         requestAnimationFrame((t) => this.loop(t));
     }
 
-    // ===== UPDATE =====
     update(dt) {
-        // Update player
         this.player.update(dt, this);
+        if (!this.player.alive) { this.gameOver(); return; }
 
-        // Check player death
-        if (!this.player.alive) {
-            this.gameOver();
-            return;
+        // Power-up timers
+        for (const k in this.activePowerUps) {
+            if (this.activePowerUps[k] > 0) this.activePowerUps[k] = Math.max(0, this.activePowerUps[k] - dt);
         }
-
-        // Update projectiles
-        for (const p of this.projectiles) {
-            p.update(dt);
-            // Out of map bounds
-            if (p.x < 0 || p.x > this.map.width || p.y < 0 || p.y > this.map.height) {
-                p.alive = false;
+        // Flame DoT
+        if (this.activePowerUps.flame > 0) {
+            for (const e of this.enemies) {
+                if (e.alive && !e.isBoss) {
+                    e.health -= 10 * dt * this.waveManager.getWaveMultiplier() * 0.5;
+                    if (Math.random() < 0.1) this.particles.spawnFlame(e.x, e.y);
+                    if (e.health <= 0) { e.health = 0; e.alive = false; this.particles.spawnDeathBurst(e.x, e.y); this.waveManager.onEnemyKilled(e, this); }
+                }
             }
         }
 
-        // Update enemies
-        for (const e of this.enemies) {
-            e.update(dt, this);
+        // Projectiles
+        for (const p of this.projectiles) {
+            p.update(dt);
+            if (p.x < 0 || p.x > this.map.width || p.y < 0 || p.y > this.map.height) p.alive = false;
         }
+        // Enemies
+        for (const e of this.enemies) e.update(dt, this);
 
-        // Projectile-Enemy collision
+        // Projectile-enemy collision
         for (const p of this.projectiles) {
             if (!p.alive) continue;
             for (const e of this.enemies) {
                 if (!e.alive) continue;
-                const dx = p.x - e.x;
-                const dy = p.y - e.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < p.radius + e.drawRadius) {
+                const dx = p.x - e.x, dy = p.y - e.y;
+                if (dx * dx + dy * dy < (p.radius + e.drawRadius) * (p.radius + e.drawRadius)) {
                     const killed = e.takeDamage(p.damage, this);
                     p.alive = false;
-
-                    // Effects
-                    this.particles.spawnBlood(e.x, e.y, 5);
+                    this.particles.spawnBlood(e.x, e.y, 6);
                     this.audio.playEnemyHit();
-
                     if (killed) {
                         this.particles.spawnDeathBurst(e.x, e.y);
                         this.audio.playEnemyDeath();
@@ -248,14 +169,11 @@ class Game {
             }
         }
 
-        // Update pickups
+        // Pickup weapon
         for (const pk of this.pickups) {
             pk.update(dt);
-            // Check pickup collision with player
-            const dx = pk.x - this.player.x;
-            const dy = pk.y - this.player.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < pk.radius + this.player.radius) {
+            const dx = pk.x - this.player.x, dy = pk.y - this.player.y;
+            if (dx * dx + dy * dy < (pk.radius + this.player.radius) * (pk.radius + this.player.radius)) {
                 this.player.addWeapon(pk.weaponIndex);
                 pk.collected = true;
                 this.particles.spawnPickupEffect(pk.x, pk.y);
@@ -263,77 +181,73 @@ class Game {
             }
         }
 
-        // Clean up dead entities
+        // Item/power-up pickups
+        for (const item of this.droppedItems) {
+            item.update(dt);
+            if (item.collected) continue;
+            const dx = item.x - this.player.x, dy = item.y - this.player.y;
+            if (dx * dx + dy * dy < (item.radius + this.player.radius) * (item.radius + this.player.radius)) {
+                item.collected = true;
+                if (item instanceof DroppedPowerUp) {
+                    item.type.apply(this);
+                    this.particles.spawnPowerUpCollect(item.x, item.y, item.type.color);
+                    this.audio.playPowerUp();
+                    if (item.key === 'freeze') this.audio.playFreeze();
+                    else if (item.key === 'flame') this.audio.playInferno();
+                    else if (item.key === 'allAmmo') this.audio.playFullAmmo();
+                    else if (item.key === 'unlimitedAmmo') this.audio.playUnlimitedAmmo();
+                    if (item.key === 'atomicBomb') this.particles.spawnNukeFlash(this.camera.x, this.camera.y, this.canvas.width, this.canvas.height);
+                } else {
+                    // Item
+                    if (item.key === 'medkit') {
+                        item.type.apply(this.player);
+                    } else if (item.type.weaponIdx !== undefined) {
+                        this.player.addAmmo(item.type.weaponIdx, item.type.ammoAmount);
+                    }
+                    this.audio.playItemPickup();
+                    this.particles.spawnPickupEffect(item.x, item.y);
+                }
+            }
+        }
+
+        // Cleanup
         this.projectiles = this.projectiles.filter(p => p.alive);
         this.enemies = this.enemies.filter(e => e.alive);
         this.pickups = this.pickups.filter(pk => !pk.collected);
+        this.droppedItems = this.droppedItems.filter(d => !d.collected);
 
-        // Update wave manager
         this.waveManager.update(dt, this);
-
-        // Update particles
         this.particles.update(dt);
-
-        // Update camera
-        this.camera.follow(this.player, this.map.width, this.map.height, this.canvas.width, this.canvas.height);
+        this.camera.follow(this.player, this.mouse, this.map.width, this.map.height, this.canvas.width, this.canvas.height);
         this.camera.update(dt);
-
-        // Reset scroll
         this.scrollDelta = 0;
     }
 
-    // ===== RENDER =====
     render() {
-        const ctx = this.ctx;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
+        const ctx = this.ctx, w = this.canvas.width, h = this.canvas.height;
+        ctx.fillStyle = '#0a0a0f'; ctx.fillRect(0, 0, w, h);
 
-        // Clear
-        ctx.fillStyle = '#0a0a0f';
-        ctx.fillRect(0, 0, w, h);
-
-        if (this.state === 'playing' || this.state === 'gameover') {
-            // Apply camera transform
+        if (this.state === 'playing' || this.state === 'paused' || this.state === 'gameover') {
             this.camera.apply(ctx);
-
-            // Draw map
             this.map.draw(ctx, this.camera, w, h);
-
-            // Draw pickups
-            for (const pk of this.pickups) {
-                pk.draw(ctx);
-            }
-
-            // Draw particles (behind entities)
+            for (const pk of this.pickups) pk.draw(ctx);
+            for (const d of this.droppedItems) d.draw(ctx);
             this.particles.draw(ctx);
-
-            // Draw enemies
-            for (const e of this.enemies) {
-                e.draw(ctx);
-            }
-
-            // Draw player
-            if (this.player) {
-                this.player.draw(ctx);
-            }
-
-            // Draw projectiles (on top)
-            for (const p of this.projectiles) {
-                p.draw(ctx);
-            }
-
-            // Restore camera transform
+            for (const e of this.enemies) e.draw(ctx);
+            if (this.player) this.player.draw(ctx);
+            for (const p of this.projectiles) p.draw(ctx);
             this.camera.restore(ctx);
+            if (this.state === 'playing') this.hud.draw(ctx, this, w, h);
+        }
 
-            // Draw HUD (screen space)
-            if (this.state === 'playing') {
-                this.hud.draw(ctx, this, w, h);
-            }
+        // Nuke flash
+        if (this.activePowerUps.nuke > 0) {
+            ctx.globalAlpha = this.activePowerUps.nuke * 1.5;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, w, h);
+            ctx.globalAlpha = 1;
         }
     }
 }
 
-// ===== START GAME =====
-window.addEventListener('load', () => {
-    window.game = new Game();
-});
+window.addEventListener('load', () => { window.game = new Game(); });

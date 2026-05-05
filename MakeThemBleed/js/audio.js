@@ -1,96 +1,160 @@
 // ===== AUDIO MANAGER =====
-// Handles procedural SFX via Web Audio API and music playback via HTML Audio
+// Uses real SFX files from SFX/ folder + music from Music/ folder.
+// Each SFX has a pool of Audio clones for overlapping playback.
 
 class AudioManager {
     constructor() {
         this.ctx = null;
         this.initialized = false;
-        this.masterVolume = 0.5;
-        this.sfxVolume = 0.6;
-        this.musicVolume = 0.4;
+        this.masterVolume = CONFIG.AUDIO.defaultMasterVolume;
+        this.sfxVolume = CONFIG.AUDIO.defaultSFXVolume;
+        this.musicVolume = CONFIG.AUDIO.defaultMusicVolume;
 
-        // Music
-        this.menuMusic = null;
+        // Music (pre-load so menu music can play immediately)
+        this.menuMusic = new Audio('Music/Make Them Bleed Soundtrack - Menu Theme.mp3');
+        this.menuMusic.loop = true;
+        this.menuMusic.volume = this.musicVolume;
+
         this.actionTracks = [];
+        for (let i = 1; i <= 4; i++) {
+            const t = new Audio(`Music/Make Them Bleed Soundtrack - Action Theme ${i}.mp3`);
+            t.volume = this.musicVolume;
+            t.addEventListener('ended', () => this._onTrackEnded());
+            this.actionTracks.push(t);
+        }
         this.currentTrackIndex = -1;
         this.shuffledOrder = [];
         this.actionMusicStarted = false;
-        this.isMusicPlaying = false;
 
-        // Noise buffer for SFX
-        this.noiseBuffer = null;
+        // Ambient (loops)
+        this.ambient = new Audio('SFX/Ambient Environment.mp3');
+        this.ambient.loop = true;
+        this.ambient.volume = this.sfxVolume * 0.3;
+
+        // SFX pools — each key maps to an array of Audio clones
+        this.sfxPools = {};
+        this.sfxIndex = {};  // round-robin index per pool
+        this._pendingMenuMusic = false;
+
+        this._initSFXPools();
+    }
+
+    _initSFXPools() {
+        const poolSize = CONFIG.AUDIO.sfxPoolSize;
+        const sfxMap = {
+            // Weapons
+            pistol: 'SFX/Pistol.mp3',
+            smg: 'SFX/SMG.mp3',
+            shotgun: 'SFX/Shotgun.mp3',
+            ar: 'SFX/Assault Rifle.mp3',
+            minigun: 'SFX/Minigun.mp3',
+            reload: 'SFX/Weapon Reload.mp3',
+            // Alien
+            alienAttack: 'SFX/Alien Attack.mp3',
+            alienDeath: 'SFX/Alien Death.mp3',
+            alienSpawn: 'SFX/Alien Spawn.mp3',
+            alienElite: 'SFX/Alien Elite.mp3',
+            alienBoss: 'SFX/Alien Boss.mp3',
+            // Player
+            footstep: 'SFX/Footstep.mp3',
+            playerDeath: 'SFX/Player Death.mp3',
+            // Items & Power-ups
+            itemPickup: 'SFX/Item Pickup.mp3',
+            freeze: 'SFX/Freeze.mp3',
+            inferno: 'SFX/Inferno.mp3',
+            fullAmmo: 'SFX/Full Ammo.mp3',
+            unlimitedAmmo: 'SFX/Unlimited Ammo.mp3',
+            nuke: 'SFX/Nuke.mp3',
+            // UI & Environment
+            uiSound: 'SFX/UI sound.mp3',
+            wave: 'SFX/Wave.mp3'
+        };
+
+        for (const [key, path] of Object.entries(sfxMap)) {
+            this.sfxPools[key] = [];
+            this.sfxIndex[key] = 0;
+            for (let i = 0; i < poolSize; i++) {
+                const a = new Audio(path);
+                a.volume = this.sfxVolume;
+                this.sfxPools[key].push(a);
+            }
+        }
+    }
+
+    // Play a SFX from pool (round-robin for overlap)
+    _play(key, volumeScale = 1.0) {
+        const pool = this.sfxPools[key];
+        if (!pool || pool.length === 0) return;
+        const idx = this.sfxIndex[key] % pool.length;
+        this.sfxIndex[key] = idx + 1;
+        const a = pool[idx];
+        a.volume = Math.min(1.0, this.sfxVolume * this.masterVolume * volumeScale);
+        a.currentTime = 0;
+        a.play().catch(() => { });
     }
 
     init() {
         if (this.initialized) return;
         try {
             this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-            this._createNoiseBuffer();
-            this._loadMusic();
             this.initialized = true;
-        } catch (e) {
-            console.warn('Web Audio API not supported:', e);
-        }
+            // If menu music was requested before init, play it now
+            if (this._pendingMenuMusic) {
+                this._pendingMenuMusic = false;
+                this.playMenuMusic();
+            }
+        } catch (e) { console.warn('Audio init failed:', e); }
     }
 
-    _createNoiseBuffer() {
-        const bufferSize = this.ctx.sampleRate * 2;
-        this.noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-        const data = this.noiseBuffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) {
-            data[i] = Math.random() * 2 - 1;
-        }
+    // ===== Volume Control =====
+    setMusicVolume(v) {
+        this.musicVolume = v;
+        if (this.menuMusic) this.menuMusic.volume = v;
+        this.actionTracks.forEach(t => t.volume = v);
+    }
+    setSFXVolume(v) {
+        this.sfxVolume = v;
+        // Update ambient
+        if (this.ambient) this.ambient.volume = v * 0.3;
     }
 
-    _loadMusic() {
-        // Menu theme
-        this.menuMusic = new Audio('Music/Make Them Bleed Soundtrack - Menu Theme.mp3');
-        this.menuMusic.loop = true;
-        this.menuMusic.volume = this.musicVolume;
-
-        // Action themes
-        for (let i = 1; i <= 4; i++) {
-            const track = new Audio(`Music/Make Them Bleed Soundtrack - Action Theme ${i}.mp3`);
-            track.volume = this.musicVolume;
-            track.addEventListener('ended', () => this._onTrackEnded());
-            this.actionTracks.push(track);
+    // ===== Music =====
+    playMenuMusic() {
+        if (!this.initialized) {
+            this._pendingMenuMusic = true;
+            // Still try to play — browsers may allow after user gesture
+            if (this.menuMusic) {
+                this.menuMusic.currentTime = 0;
+                this.menuMusic.play().catch(() => { /* will play after init */ });
+            }
+            return;
         }
+        this.stopActionMusic();
+        if (this.menuMusic) {
+            this.menuMusic.currentTime = 0;
+            this.menuMusic.play().catch(() => { });
+        }
+    }
+    stopMenuMusic() {
+        if (this.menuMusic) { this.menuMusic.pause(); this.menuMusic.currentTime = 0; }
     }
 
     _shuffleActionTracks() {
         this.shuffledOrder = [0, 1, 2, 3];
-        for (let i = this.shuffledOrder.length - 1; i > 0; i--) {
+        for (let i = 3; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [this.shuffledOrder[i], this.shuffledOrder[j]] = [this.shuffledOrder[j], this.shuffledOrder[i]];
         }
     }
-
     _onTrackEnded() {
         this.currentTrackIndex++;
         if (this.currentTrackIndex >= this.shuffledOrder.length) {
             this._shuffleActionTracks();
             this.currentTrackIndex = 0;
         }
-        const trackIdx = this.shuffledOrder[this.currentTrackIndex];
-        this.actionTracks[trackIdx].currentTime = 0;
-        this.actionTracks[trackIdx].play().catch(() => {});
-    }
-
-    // ===== Music Controls =====
-    playMenuMusic() {
-        this.stopActionMusic();
-        if (this.menuMusic) {
-            this.menuMusic.currentTime = 0;
-            this.menuMusic.play().catch(() => {});
-            this.isMusicPlaying = true;
-        }
-    }
-
-    stopMenuMusic() {
-        if (this.menuMusic) {
-            this.menuMusic.pause();
-            this.menuMusic.currentTime = 0;
-        }
+        const t = this.actionTracks[this.shuffledOrder[this.currentTrackIndex]];
+        t.currentTime = 0;
+        t.play().catch(() => { });
     }
 
     startActionMusic() {
@@ -99,157 +163,63 @@ class AudioManager {
         this.stopMenuMusic();
         this._shuffleActionTracks();
         this.currentTrackIndex = 0;
-        const trackIdx = this.shuffledOrder[0];
-        this.actionTracks[trackIdx].currentTime = 0;
-        this.actionTracks[trackIdx].play().catch(() => {});
+        const t = this.actionTracks[this.shuffledOrder[0]];
+        t.currentTime = 0;
+        t.play().catch(() => { });
     }
-
     stopActionMusic() {
         this.actionMusicStarted = false;
         this.currentTrackIndex = -1;
-        this.actionTracks.forEach(t => {
-            t.pause();
-            t.currentTime = 0;
-        });
+        this.actionTracks.forEach(t => { t.pause(); t.currentTime = 0; });
     }
+    stopAllMusic() { this.stopMenuMusic(); this.stopActionMusic(); }
 
-    stopAllMusic() {
-        this.stopMenuMusic();
-        this.stopActionMusic();
-    }
-
-    // ===== SFX Generation =====
-    _playNoise(duration, frequency, filterType, filterQ, volume, detune) {
-        if (!this.ctx) return;
-        const source = this.ctx.createBufferSource();
-        source.buffer = this.noiseBuffer;
-
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = filterType || 'bandpass';
-        filter.frequency.value = frequency || 1000;
-        filter.Q.value = filterQ || 1;
-
-        const gain = this.ctx.createGain();
-        const vol = (volume || 0.3) * this.sfxVolume * this.masterVolume;
-        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
-
-        source.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        source.start(this.ctx.currentTime);
-        source.stop(this.ctx.currentTime + duration);
-    }
-
-    _playTone(frequency, duration, type, volume, pitchEnd) {
-        if (!this.ctx) return;
-        const osc = this.ctx.createOscillator();
-        osc.type = type || 'sine';
-        osc.frequency.setValueAtTime(frequency, this.ctx.currentTime);
-        if (pitchEnd) {
-            osc.frequency.exponentialRampToValueAtTime(pitchEnd, this.ctx.currentTime + duration);
+    // ===== Ambient =====
+    startWind() {
+        if (this.ambient) {
+            this.ambient.volume = this.sfxVolume * 0.3;
+            this.ambient.currentTime = 0;
+            this.ambient.play().catch(() => { });
         }
-
-        const gain = this.ctx.createGain();
-        const vol = (volume || 0.2) * this.sfxVolume * this.masterVolume;
-        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
-
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        osc.start(this.ctx.currentTime);
-        osc.stop(this.ctx.currentTime + duration);
+    }
+    stopWind() {
+        if (this.ambient) { this.ambient.pause(); this.ambient.currentTime = 0; }
     }
 
-    // Weapon SFX
-    playPistolShot() {
-        this._playNoise(0.08, 2500, 'bandpass', 2, 0.35);
-        this._playTone(300, 0.05, 'square', 0.1, 100);
-    }
-
-    playSMGShot() {
-        this._playNoise(0.04, 3000, 'bandpass', 3, 0.2);
-        this._playTone(400, 0.03, 'square', 0.08, 200);
-    }
-
-    playShotgunBlast() {
-        this._playNoise(0.15, 800, 'lowpass', 1, 0.5);
-        this._playNoise(0.1, 2000, 'bandpass', 1, 0.3);
-        this._playTone(150, 0.1, 'sawtooth', 0.15, 50);
-    }
-
-    playAssaultRifleShot() {
-        this._playNoise(0.05, 3500, 'bandpass', 2, 0.25);
-        this._playTone(350, 0.04, 'square', 0.1, 150);
-    }
-
-    playMinigunShot() {
-        this._playNoise(0.025, 4000, 'highpass', 2, 0.15);
-        this._playTone(500, 0.02, 'square', 0.06, 300);
-    }
-
+    // ===== Weapon SFX =====
     playShot(weaponIndex) {
-        const shots = [
-            () => this.playPistolShot(),
-            () => this.playSMGShot(),
-            () => this.playShotgunBlast(),
-            () => this.playAssaultRifleShot(),
-            () => this.playMinigunShot()
-        ];
-        if (shots[weaponIndex]) shots[weaponIndex]();
+        const keys = ['pistol', 'smg', 'shotgun', 'ar', 'minigun'];
+        this._play(keys[weaponIndex] || 'pistol');
     }
+    playReload() { this._play('reload', 0.8); }
 
-    // Enemy SFX
-    playEnemyHit() {
-        this._playNoise(0.06, 600, 'lowpass', 2, 0.2);
-        this._playTone(200, 0.08, 'sine', 0.1, 80);
-    }
+    // ===== Alien SFX =====
+    playAlienBite() { this._play('alienAttack', 0.7); }
+    playEnemyHit() { this._play('alienAttack', 0.3); }
+    playEnemyDeath() { this._play('alienDeath', 0.8); }
+    playAlienSpawn() { this._play('alienSpawn', 0.5); }
+    playEliteSpawn() { this._play('alienElite', 0.9); }
+    playBossAppear() { this._play('alienBoss', 1.0); }
 
-    playEnemyDeath() {
-        this._playNoise(0.2, 400, 'lowpass', 1, 0.35);
-        this._playTone(400, 0.3, 'sawtooth', 0.15, 50);
-        this._playTone(300, 0.25, 'sine', 0.1, 30);
-    }
+    // ===== Player SFX =====
+    playPlayerFootstep() { this._play('footstep', 0.4); }
+    playPlayerHit() { this._play('alienAttack', 0.6); }
+    playPlayerDeath() { this._play('playerDeath', 1.0); }
 
-    // Player SFX
-    playPlayerHit() {
-        this._playNoise(0.1, 500, 'lowpass', 1, 0.4);
-        this._playTone(100, 0.15, 'sine', 0.2, 40);
-    }
+    // ===== Item SFX =====
+    playItemPickup() { this._play('itemPickup', 0.7); }
+    playWeaponPickup() { this._play('itemPickup', 1.0); }
+    playPowerUp() { this._play('uiSound', 0.6); }
 
-    // Pickup SFX
-    playWeaponPickup() {
-        this._playTone(440, 0.1, 'sine', 0.2);
-        setTimeout(() => {
-            if (this.ctx) this._playTone(880, 0.15, 'sine', 0.25);
-        }, 100);
-        setTimeout(() => {
-            if (this.ctx) this._playTone(1320, 0.2, 'sine', 0.2);
-        }, 200);
-    }
+    // ===== Power-up SFX =====
+    playFreeze() { this._play('freeze', 1.0); }
+    playInferno() { this._play('inferno', 1.0); }
+    playFullAmmo() { this._play('fullAmmo', 1.0); }
+    playUnlimitedAmmo() { this._play('unlimitedAmmo', 1.0); }
+    playNuke() { this._play('nuke', 1.0); }
 
-    // Wave SFX
-    playWaveStart() {
-        this._playTone(200, 0.4, 'sawtooth', 0.15, 600);
-        this._playNoise(0.3, 1000, 'bandpass', 2, 0.1);
-    }
-
-    // Boss appear
-    playBossAppear() {
-        this._playTone(60, 0.8, 'sawtooth', 0.3, 30);
-        this._playNoise(0.6, 200, 'lowpass', 1, 0.3);
-        this._playTone(80, 0.6, 'square', 0.15, 40);
-    }
-
-    // UI SFX
-    playUIHover() {
-        this._playTone(800, 0.05, 'sine', 0.08);
-    }
-
-    playUIClick() {
-        this._playTone(600, 0.08, 'square', 0.12);
-        this._playTone(900, 0.06, 'sine', 0.08);
-    }
+    // ===== UI SFX =====
+    playUIClick() { this._play('uiSound', 0.5); }
+    playUIHover() { this._play('uiSound', 0.2); }
+    playWaveStart() { this._play('wave', 0.9); }
 }
